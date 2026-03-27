@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-
+from tqdm import tqdm
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 0 · Constants & config
@@ -139,10 +139,8 @@ class Generator(nn.Module):
         self.res = ResBlock1D(CHANNELS_G[-1] + COND_DIM)
 
         # Final projection to signal channels
-        # TODO: Do not hardcode this value
-        final_channels = 48
-        self.out_conv = nn.Conv1d(final_channels, 3, kernel_size=1)
-
+        self.out_conv = nn.LazyConv1d(3, kernel_size=1)
+    
     def forward(self, noise: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         B = noise.size(0)
 
@@ -352,6 +350,8 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
     for epoch in range(1, NUM_EPOCHS + 1):
         g_epoch, c_epoch, n = 0.0, 0.0, 0
 
+        pbar = tqdm(loader, desc=f"Epoch {epoch}/{NUM_EPOCHS}", leave=False)
+
         for real, labels, rpm_idx in loader:
             real    = real.to(device)
             labels  = labels.to(device)
@@ -383,6 +383,12 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
             c_epoch += c_loss.item()
             g_epoch += g_loss.item()
             n       += 1
+
+            # Progress Bar
+            pbar.set_postfix({
+            "C_loss": f"{c_loss.item():+.3f}",
+            "G_loss": f"{g_loss.item():+.3f}",
+            })
 
         if epoch % 100 == 0:
             avg_c = c_epoch / n
