@@ -28,12 +28,16 @@ from tqdm import tqdm
 WINDOW_SIZE   = 200        # timesteps per window  (match with create_windows)
 N_CHANNELS    = 3          # X, Y, Z  (Time acts as an index)
 NOISE_DIM     = 128        # latent vector size
-N_CRITIC      = 5          # critic updates per generator update
+N_CRITIC      = 1          # critic updates per generator update (FINAL TRAINING TO BE ON 5)
 LAMBDA_GP     = 10         # gradient-penalty weight
 LR            = 1e-4
 BETA1, BETA2  = 0.0, 0.9   # Adam betas — 0.0 for β1 is standard in WGAN
-BATCH_SIZE    = 32         # keep small; chatter data is scarce
-NUM_EPOCHS    = 1000
+BATCH_SIZE    = 64         # keep small; chatter data is scarce
+NUM_EPOCHS    = 500
+
+TRAINING_SAMPLES = 10000  # start with 10k–50k
+
+NUM_WORKERS = 8           # dataloader workers
 
 RPM_CLASSES   = [4500, 5500, 6000, 7500, 8000, 8500]
 NUM_RPM       = len(RPM_CLASSES)
@@ -322,7 +326,15 @@ def build_dataloader(
         torch.from_numpy(labels),
         torch.from_numpy(rpm_idxs),
     )
-    return DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
+    return DataLoader(dataset, 
+                    batch_size=BATCH_SIZE, 
+                    shuffle=True, 
+                    drop_last=True, 
+                    num_workers=NUM_WORKERS,            # try 4 → 8
+                    pin_memory=True,                    # faster CPU → GPU transfer
+                    persistent_workers=True,            # avoids worker restart cost
+                    prefetch_factor=2                   # batches per worker preloaded
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -356,7 +368,7 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
             real    = real.to(device)
             labels  = labels.to(device)
             rpm_idx = rpm_idx.to(device)
-            cond    = make_condition(labels, rpm_idx)
+            cond = make_condition(labels, rpm_idx).to(device, non_blocking=True)
             B       = real.size(0)
 
             # ── Critic: N_CRITIC steps per generator step ─────────────────
@@ -505,9 +517,16 @@ if __name__ == "__main__":
     windows, labels, rpm_idxs = load_csv_to_windows(file_manifest)
     windows_norm, w_min, w_range = per_window_normalise(windows)
 
-    print(f"Dataset: {len(windows)} windows "
+    print(f"Total Dataset: {len(windows)} windows "
           f"| chatter: {(labels==1).sum()} "
           f"| no-chatter: {(labels==0).sum()}")
+    
+    idx = np.random.choice(len(windows_norm), TRAINING_SAMPLES, replace=False)
+    print("TRAINING ON ", TRAINING_SAMPLES, " SAMPLES")
+
+    windows_norm = windows_norm[idx]
+    labels       = labels[idx]
+    rpm_idxs     = rpm_idxs[idx]
 
     loader = build_dataloader(windows_norm, labels, rpm_idxs)
 
