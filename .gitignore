@@ -1,0 +1,3 @@
+dataset/
+PredictingMachineStatus/processed_features.parquet
+test.py
