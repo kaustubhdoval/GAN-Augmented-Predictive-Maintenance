@@ -1,7 +1,5 @@
 # Generating Synthetic Failure Data
 
-**DATASET IS CONFIDENTIAL AND HAS NOT BEEN UPLOADED TO GITHUB**
-
 In real-world applications - such as industrial machinery operating on a factory floor - failure data is inherently scarce. Training models exclusively on nominal (“healthy”) data results in significant class imbalance, which can adversely affect model performance and reliability.
 
 To address this challenge, we employ Generative Adversarial Networks (GANs) to synthesize representative failure data. This approach mitigates class imbalance and enables the development of more robust and accurate predictive models. You can refer to the section on GANs to learn more about them.
@@ -56,8 +54,8 @@ This progression poses a problem for convergence of the GAN as a whole: the disc
 
 ## References
 
-https://www.sciencedirect.com/science/article/pii/S0019057821006169
-https://en.wikipedia.org/wiki/Generative_adversarial_network
-https://www.ibm.com/think/topics/generative-adversarial-networks
-https://developers.google.com/machine-learning/gan/gan_structure
-https://medium.com/the-research-nest/how-to-program-a-simple-gan-559ad707e201
+1. https://www.sciencedirect.com/science/article/pii/S0019057821006169
+2. https://en.wikipedia.org/wiki/Generative_adversarial_network
+3. https://www.ibm.com/think/topics/generative-adversarial-networks
+4. https://developers.google.com/machine-learning/gan/gan_structure
+5. https://medium.com/the-research-nest/how-to-program-a-simple-gan-559ad707e201
