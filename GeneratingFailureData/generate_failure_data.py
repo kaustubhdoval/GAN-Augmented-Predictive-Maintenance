@@ -427,7 +427,13 @@ def build_dataloader(
 
 def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/checkpoints"):
     """Train the Conditional WGAN-GP. Returns trained Generator and Critic."""
+    
+    # Resolve to absolute path immediately so there's no ambiguity about
+    # where files land regardless of working directory.
+    checkpoint_dir = os.path.abspath(checkpoint_dir)
     os.makedirs(checkpoint_dir, exist_ok=True)
+    print(f"Checkpoints will be saved to: {checkpoint_dir}")  
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
     print(f"  Window size : {WINDOW_SIZE}  |  Channels : {N_CHANNELS}")
@@ -444,33 +450,33 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
         C.train()
         g_epoch, c_epoch, n = 0.0, 0.0, 0
 
-        # FIX: tqdm wraps the loader directly so the bar actually updates.
-        # Original created pbar but then iterated `loader` — bar was a no-op.
         pbar = tqdm(loader, desc=f"Epoch {epoch}/{NUM_EPOCHS}", leave=False)
         for real, labels, rpm_idx in pbar:
             real    = real.to(device,    non_blocking=True)
             labels  = labels.to(device,  non_blocking=True)
             rpm_idx = rpm_idx.to(device, non_blocking=True)
+            cond    = make_condition(labels, rpm_idx)
+            B       = real.size(0)
 
-            # FIX: cond is created on device already; no second .to() needed.
-            cond = make_condition(labels, rpm_idx)
-            B    = real.size(0)
-
-            # ── Critic: N_CRITIC steps per generator step ─────────────────
+            # ── Critic ────────────────────────────────────────────────────
             for _ in range(N_CRITIC):
-                noise  = torch.randn(B, NOISE_DIM, device=device)
-                with torch.no_grad():
-                    fake = G(noise, cond)     # detach via no_grad — cheaper than .detach()
-                gp     = gradient_penalty(C, real, fake.requires_grad_(False), cond, device)
+                noise = torch.randn(B, NOISE_DIM, device=device)
+
+                # BUG FIX: fake must be generated OUTSIDE no_grad for GP.
+                # gradient_penalty() creates an interpolation and calls
+                # autograd.grad through it — that graph needs to be live.
+                G.eval()                          # still stop BN/dropout updating
+                fake = G(noise, cond).detach()    # .detach() is the right tool here
+                G.train()
+
+                gp     = gradient_penalty(C, real, fake, cond, device)
                 c_loss = C(fake, cond).mean() - C(real, cond).mean() + LAMBDA_GP * gp
-                # NOTE: Wasserstein distance ≈ E[real] - E[fake], so critic
-                # loss = E[fake] - E[real] + GP  (we minimise this)
 
                 c_opt.zero_grad()
                 c_loss.backward()
                 c_opt.step()
 
-            # ── Generator: 1 step ──────────────────────────────────────────
+            # ── Generator ─────────────────────────────────────────────────
             noise  = torch.randn(B, NOISE_DIM, device=device)
             fake   = G(noise, cond)
             g_loss = -C(fake, cond).mean()
@@ -495,8 +501,10 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
                   f"W-dist≈{-avg_c:+.4f}   G-loss: {avg_g:+.4f}")
             save_checkpoint(G, C, g_opt, c_opt, epoch, checkpoint_dir)
 
-    torch.save(G.state_dict(), f"{checkpoint_dir}/G_final.pt")
-    torch.save(C.state_dict(), f"{checkpoint_dir}/C_final.pt")
+    # FIX: use save_checkpoint for the final save too so it's resumable,
+    # not just bare state_dicts which lose optimiser state.
+    save_checkpoint(G, C, g_opt, c_opt, NUM_EPOCHS, checkpoint_dir)
+    print(f"Final checkpoint saved to {checkpoint_dir}")
     print("Done.")
     return G, C
 
