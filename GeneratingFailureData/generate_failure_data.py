@@ -647,24 +647,30 @@ if __name__ == "__main__":
     windows_norm, w_min, w_range = per_window_normalise(windows)
 
     print(f"Total dataset: {len(windows_norm)} windows  "
-          f"| chatter: {(labels == 1).sum().item()} "
-          f"| no-chatter: {(labels == 0).sum().item()}")
+        f"| chatter: {(labels == 1).sum().item()} "
+        f"| no-chatter: {(labels == 0).sum().item()}")
 
     # ── Subsample for iterative tuning runs ───────────────────────────────
     chatter_idx    = (labels == 1).nonzero(as_tuple=True)[0]
     nochatter_idx  = (labels == 0).nonzero(as_tuple=True)[0]
 
     n_each = TRAINING_SAMPLES // 2
+
     sampled = torch.cat([
         chatter_idx[torch.randperm(len(chatter_idx))[:n_each]],
         nochatter_idx[torch.randperm(len(nochatter_idx))[:n_each]],
     ])
-    print(f"Training on {TRAINING_SAMPLES} samples")
 
+    # (optional but recommended) shuffle after concat
+    sampled = sampled[torch.randperm(len(sampled))]
+
+    print(f"Training on {len(sampled)} samples")
+
+    # ── Build dataloader using sampled indices ────────────────────────────
     loader = build_dataloader(
         windows_norm[sampled],
         labels[sampled],
-        rpm_idxs[sampled],
+        rpm_idxs[sampled],  
     )
 
     # ── Train ──────────────────────────────────────────────────────────────
@@ -673,29 +679,41 @@ if __name__ == "__main__":
     # ── Generate chatter at high RPMs ─────────────────────────────────────
     device    = next(G.parameters()).device
     synth_dfs = []
+
     for rpm in [7500, 8000, 8500]:
         gen_windows = generate_windows(G, label=1, rpm=rpm, n=300, device=device)
         dfs = windows_to_dataframes(gen_windows)
+
         for df in dfs:
             df["RPM"]   = rpm
             df["label"] = 1
+
         synth_dfs.extend(dfs)
         print(f"Generated 300 chatter windows at {rpm} RPM")
 
-    # Save Generated Windows
+    # ── Save Generated Windows ────────────────────────────────────────────
     all_windows = np.concatenate([
         generate_windows(G, label=1, rpm=rpm, n=300, device=device)
         for rpm in [7500, 8000, 8500]
-        ])
+    ])
+
     all_labels = np.array([1] * 900)
     all_rpms   = np.repeat([7500, 8000, 8500], 300)
 
     save_windows_to_csv(all_windows, all_labels, all_rpms, output_dir="dataset/synthetic")
 
     # ── Sanity-check one window ────────────────────────────────────────────
-    real_chatter_idx = (labels[idx] == 1).nonzero(as_tuple=True)[0][0].item()
-    synth_sample     = generate_windows(G, label=1, rpm=4500, n=1, device=device)[0]
-    plot_real_vs_synthetic(windows_norm[idx[real_chatter_idx]].numpy(), synth_sample)
+    sampled_labels = labels[sampled]
+    sampled_windows = windows_norm[sampled]
+
+    real_chatter_idx = (sampled_labels == 1).nonzero(as_tuple=True)[0][0].item()
+
+    synth_sample = generate_windows(G, label=1, rpm=4500, n=1, device=device)[0]
+
+    plot_real_vs_synthetic(
+        sampled_windows[real_chatter_idx].numpy(),  
+        synth_sample
+    )
 
     # ── (Optional) extract features from synthetic windows ─────────────────
     # from your_feature_code import create_windows
