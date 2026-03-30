@@ -24,7 +24,7 @@ from tqdm import tqdm
 WINDOW_SIZE   = 200
 N_CHANNELS    = 3
 NOISE_DIM     = 128
-N_CRITIC      = 1         # set to 5 for final training run
+N_CRITIC      = 5         # set to 5 for final training run
 LAMBDA_GP     = 10
 LR            = 1e-4
 BETA1, BETA2  = 0.0, 0.9
@@ -185,6 +185,106 @@ class Critic(nn.Module):
 
         return self.fc(self.pool(x).squeeze(-1))   # (B, 1)
 
+#
+# CHECKPOINT STUFF
+#
+def save_windows_to_csv(
+    windows:    np.ndarray,
+    labels:     list[int] | np.ndarray,
+    rpms:       list[int] | np.ndarray,
+    output_dir: str = "dataset/synthetic",
+) -> None:
+    """
+    Save generated (n, 3, WINDOW_SIZE) windows to CSV files that mirror
+    the format of your real input files.
+
+    Each file is named:  {rpm}_{label}_synth_{i}.csv
+    Each file has columns: T, X, Y, Z  — same as your real CSVs.
+
+    Parameters
+    ----------
+    windows    : (n, 3, WINDOW_SIZE) float32 array from generate_windows()
+    labels     : length-n sequence of integer labels (0 or 1)
+    rpms       : length-n sequence of RPM values
+    output_dir : folder to write into (created if it doesn't exist)
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    t_col = np.arange(windows.shape[2])
+
+    # Count existing files per (rpm, label) pair so indices don't collide
+    # across multiple calls
+    counters: dict[tuple[int,int], int] = {}
+
+    for i, (window, label, rpm) in enumerate(zip(windows, labels, rpms)):
+        key = (int(rpm), int(label))
+        idx = counters.get(key, 0)
+        counters[key] = idx + 1
+
+        fname = f"{rpm}_{label}_synth_{idx:04d}.csv"
+        fpath = os.path.join(output_dir, fname)
+
+        df = pd.DataFrame(
+            window.T,                          # (WINDOW_SIZE, 3)
+            columns=["X", "Y", "Z"],
+        )
+        df.insert(0, "T", t_col)
+        df.to_csv(fpath, index=False)
+
+    print(f"Saved {len(windows)} windows to {output_dir}/")
+
+
+def save_checkpoint(
+    G:              "Generator",
+    C:              "Critic",
+    g_opt:          torch.optim.Optimizer,
+    c_opt:          torch.optim.Optimizer,
+    epoch:          int,
+    checkpoint_dir: str = "GeneratingFailureData/checkpoints",
+) -> None:
+    """
+    Save a full resumable checkpoint — model weights + optimiser states + epoch.
+    This lets you resume training exactly where you left off, including the
+    Adam moment buffers (loss of those = first few epochs after resume are noisy).
+    """
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch:05d}.pt")
+    torch.save({
+        "epoch":       epoch,
+        "G_state":     G.state_dict(),
+        "C_state":     C.state_dict(),
+        "g_opt_state": g_opt.state_dict(),
+        "c_opt_state": c_opt.state_dict(),
+    }, path)
+    print(f"Checkpoint saved → {path}")
+
+
+def load_checkpoint(
+    G:              "Generator",
+    C:              "Critic",
+    g_opt:          torch.optim.Optimizer,
+    c_opt:          torch.optim.Optimizer,
+    path:           str,
+    device:         torch.device,
+) -> int:
+    """
+    Load a checkpoint saved by save_checkpoint().
+    Restores weights + optimiser states in-place, returns the saved epoch
+    so your training loop can resume from the right number.
+
+    Usage
+    -----
+    start_epoch = load_checkpoint(G, C, g_opt, c_opt, "checkpoints/checkpoint_00500.pt", device)
+    for epoch in range(start_epoch + 1, NUM_EPOCHS + 1):
+        ...
+    """
+    ckpt = torch.load(path, map_location=device)
+    G.load_state_dict(ckpt["G_state"])
+    C.load_state_dict(ckpt["C_state"])
+    g_opt.load_state_dict(ckpt["g_opt_state"])
+    c_opt.load_state_dict(ckpt["c_opt_state"])
+    epoch = ckpt["epoch"]
+    print(f"Resumed from epoch {epoch}  ← {path}")
+    return epoch
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4 · Gradient penalty
@@ -244,7 +344,7 @@ def load_csv_to_windows(
     total = 0
     lengths: list[int] = []
     for path, _, _ in filepaths:
-        n_rows = len(pd.read_csv(os.path.join("dataset/chatter", path)))
+        n_rows = len(pd.read_csv(os.path.join("dataset", "chatter", path)))
         n_win  = max(0, (n_rows - window_size) // step)
         lengths.append(n_win)
         total += n_win
@@ -256,7 +356,7 @@ def load_csv_to_windows(
     # ── Pass 2: fill pre-allocated arrays ────────────────────────────────
     cursor = 0
     for (path, label, rpm), n_win in zip(filepaths, lengths):
-        df  = pd.read_csv(os.path.join("dataset/chatter", path))
+        df  = pd.read_csv(os.path.join("dataset", "chatter", path))
         sig = df[["X", "Y", "Z"]].to_numpy(dtype=np.float32)   # (T, 3)
 
         # Build all start indices at once, then slice with a vectorised index
@@ -393,8 +493,7 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
             avg_g = g_epoch / n
             print(f"Epoch [{epoch:>5}/{NUM_EPOCHS}]  "
                   f"W-dist≈{-avg_c:+.4f}   G-loss: {avg_g:+.4f}")
-            torch.save(G.state_dict(), f"{checkpoint_dir}/G_{epoch:05d}.pt")
-            torch.save(C.state_dict(), f"{checkpoint_dir}/C_{epoch:05d}.pt")
+            save_checkpoint(G, C, g_opt, c_opt, epoch, checkpoint_dir)
 
     torch.save(G.state_dict(), f"{checkpoint_dir}/G_final.pt")
     torch.save(C.state_dict(), f"{checkpoint_dir}/C_final.pt")
@@ -557,6 +656,16 @@ if __name__ == "__main__":
             df["label"] = 1
         synth_dfs.extend(dfs)
         print(f"Generated 300 chatter windows at {rpm} RPM")
+
+    # Save Generated Windows
+    all_windows = np.concatenate([
+        generate_windows(G, label=1, rpm=rpm, n=300, device=device)
+        for rpm in [7500, 8000, 8500]
+        ])
+    all_labels = np.array([1] * 900)
+    all_rpms   = np.repeat([7500, 8000, 8500], 300)
+
+    save_windows_to_csv(all_windows, all_labels, all_rpms, output_dir="dataset/synthetic")
 
     # ── Sanity-check one window ────────────────────────────────────────────
     real_chatter_idx = (labels[idx] == 1).nonzero(as_tuple=True)[0][0].item()
