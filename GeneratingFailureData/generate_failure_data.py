@@ -24,7 +24,7 @@ from tqdm import tqdm
 WINDOW_SIZE   = 200
 N_CHANNELS    = 3
 NOISE_DIM     = 128
-N_CRITIC      = 5         # set to 5 for final training run
+N_CRITIC      = 3         # set to 3 for final training run
 LAMBDA_GP     = 10
 LR            = 1e-4
 BETA1, BETA2  = 0.0, 0.9
@@ -255,7 +255,11 @@ def save_checkpoint(
         "g_opt_state": g_opt.state_dict(),
         "c_opt_state": c_opt.state_dict(),
     }, path)
-    print(f"Checkpoint saved → {path}")
+    try:
+        save_checkpoint(G, C, g_opt, c_opt, epoch, checkpoint_dir)
+        print(f"✓ Checkpoint saved epoch {epoch}")
+    except Exception as e:
+        print(f"✗ Checkpoint FAILED: {e}")
 
 
 def load_checkpoint(
@@ -445,6 +449,9 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
     g_opt = optim.Adam(G.parameters(), lr=LR, betas=(BETA1, BETA2))
     c_opt = optim.Adam(C.parameters(), lr=LR, betas=(BETA1, BETA2))
 
+    g_sched = optim.lr_scheduler.CosineAnnealingLR(g_opt, T_max=NUM_EPOCHS, eta_min=1e-5)
+    c_sched = optim.lr_scheduler.CosineAnnealingLR(c_opt, T_max=NUM_EPOCHS, eta_min=1e-5)
+
     for epoch in range(1, NUM_EPOCHS + 1):
         G.train()
         C.train()
@@ -488,6 +495,9 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
             c_epoch += c_loss.item()
             g_epoch += g_loss.item()
             n       += 1
+
+            g_sched.step()
+            c_sched.step()
 
             pbar.set_postfix({
                 "C": f"{c_loss.item():+.3f}",
@@ -641,13 +651,20 @@ if __name__ == "__main__":
           f"| no-chatter: {(labels == 0).sum().item()}")
 
     # ── Subsample for iterative tuning runs ───────────────────────────────
-    idx = torch.randperm(len(windows_norm))[:TRAINING_SAMPLES]
+    chatter_idx    = (labels == 1).nonzero(as_tuple=True)[0]
+    nochatter_idx  = (labels == 0).nonzero(as_tuple=True)[0]
+
+    n_each = TRAINING_SAMPLES // 2
+    sampled = torch.cat([
+        chatter_idx[torch.randperm(len(chatter_idx))[:n_each]],
+        nochatter_idx[torch.randperm(len(nochatter_idx))[:n_each]],
+    ])
     print(f"Training on {TRAINING_SAMPLES} samples")
 
     loader = build_dataloader(
-        windows_norm[idx],
-        labels[idx],
-        rpm_idxs[idx],
+        windows_norm[sampled],
+        labels[sampled],
+        rpm_idxs[sampled],
     )
 
     # ── Train ──────────────────────────────────────────────────────────────
