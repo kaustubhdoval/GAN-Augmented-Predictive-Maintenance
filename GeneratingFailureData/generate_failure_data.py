@@ -24,15 +24,15 @@ from tqdm import tqdm
 WINDOW_SIZE   = 200
 N_CHANNELS    = 3
 NOISE_DIM     = 128
-N_CRITIC      = 4        
-LAMBDA_GP     = 15
+N_CRITIC      = 3        
+LAMBDA_GP     = 10
 LR_G          = 1e-4
-LR_C          = 2e-4
+LR_C          = 1.5e-4
 BETA1, BETA2  = 0.0, 0.9
 BATCH_SIZE    = 64
-NUM_EPOCHS    = 500
+NUM_EPOCHS    = 300
 
-TRAINING_SAMPLES  = 20_000
+TRAINING_SAMPLES  = 10_000
 GEN_BATCH_SIZE    = 256    # max windows per forward pass in generate_windows
 NUM_WORKERS       = 8
 
