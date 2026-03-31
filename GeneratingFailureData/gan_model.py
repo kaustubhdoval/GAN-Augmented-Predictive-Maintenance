@@ -186,9 +186,9 @@ class Critic(nn.Module):
 
         return self.fc(self.pool(x).squeeze(-1))   # (B, 1)
 
-#
-# CHECKPOINT STUFF
-#
+# ─────────────────────────────────────────────────────────────────────────────
+# Checkpoint and CSV Functions
+# ─────────────────────────────────────────────────────────────────────────────
 def save_windows_to_csv(
     windows:    np.ndarray,
     labels:     list[int] | np.ndarray,
@@ -533,7 +533,7 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
                   f"W-dist≈{wdist:+.4f}   G-loss: {avg_g:+.4f}   σ={noise_std:.4f}")
 
         # ── Early stopping: fire every epoch, not just every 50 ──────────
-        if wdist > 0 and wdist < best_wdist:
+        if wdist < best_wdist:
             best_wdist = wdist
             best_epoch = epoch
             wait = 0
@@ -543,12 +543,7 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
         else:
             wait += 1
 
-        # Stop if W-dist goes negative OR patience exhausted
-        if wdist < 0:
-            print(f"\nEarly stopping at epoch {epoch} — W-dist went negative ({wdist:+.4f})")
-            print(f"Best checkpoint was epoch {best_epoch} with W-dist={best_wdist:.4f}")
-            break
-
+        # Stop if patience exhausted — no improvement for this many epochs
         if wait >= patience:
             print(f"\nEarly stopping at epoch {epoch} — no improvement for {patience} epochs")
             print(f"Best checkpoint was epoch {best_epoch} with W-dist={best_wdist:.4f}")
