@@ -17,7 +17,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from generate_failure_data import ResBlock1D, Generator, make_condition, cond_to_channel, generate_windows, save_windows_to_csv
+from GeneratingFailureData.gan_model import Generator, generate_windows, save_windows_to_csv
 
 # ── Copy of the architecture constants ──────────────────
 WINDOW_SIZE    = 200

@@ -26,7 +26,7 @@ N_CHANNELS    = 3
 NOISE_DIM     = 128
 N_CRITIC      = 3        
 LAMBDA_GP     = 10
-LR_G          = 1e-4
+LR_G          = 8e-5
 LR_C          = 1.5e-4
 BETA1, BETA2  = 0.0, 0.9
 BATCH_SIZE    = 64
@@ -449,6 +449,10 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
     g_sched = optim.lr_scheduler.CosineAnnealingLR(g_opt, T_max=NUM_EPOCHS, eta_min=1e-5)
     c_sched = optim.lr_scheduler.CosineAnnealingLR(c_opt, T_max=NUM_EPOCHS, eta_min=1e-5)
 
+    best_wdist = float("inf")   # we want smallest positive W-dist
+    patience = 20               # how many epochs to wait before stopping
+    wait = 0
+
     for epoch in range(1, NUM_EPOCHS + 1):
         G.train()
         C.train()
@@ -501,12 +505,27 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
         g_sched.step()
         c_sched.step()
 
-        if epoch % 100 == 0:
+        if epoch % 50 == 0:
             avg_c = c_epoch / n
             avg_g = g_epoch / n
+            wdist = -avg_c   # same as what you print
+
             print(f"Epoch [{epoch:>5}/{NUM_EPOCHS}]  "
-                  f"W-dist≈{-avg_c:+.4f}   G-loss: {avg_g:+.4f}")
-            save_checkpoint(G, C, g_opt, c_opt, epoch, checkpoint_dir)
+                f"W-dist≈{wdist:+.4f}   G-loss: {avg_g:+.4f}")
+
+            # ── Early stopping logic ────────────────────────────────
+            if wdist > 0 and wdist < best_wdist:
+                best_wdist = wdist
+                wait = 0
+                save_checkpoint(G, C, g_opt, c_opt, epoch, checkpoint_dir)
+                print(f"✓ New best W-dist → {wdist:.4f} (checkpoint saved)")
+            else:
+                wait += 1
+
+            # Stop if W-dist starts increasing for too long OR flips negative
+            if wait >= patience or wdist < 0:
+                print(f"Early stopping at epoch {epoch}")
+                break
 
     # FIX: use save_checkpoint for the final save too so it's resumable,
     # not just bare state_dicts which lose optimiser state.
