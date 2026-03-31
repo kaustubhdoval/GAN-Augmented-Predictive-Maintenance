@@ -24,7 +24,7 @@ from tqdm import tqdm
 WINDOW_SIZE   = 200
 N_CHANNELS    = 3
 NOISE_DIM     = 128
-N_CRITIC      = 3         # set to 3 for final training run
+N_CRITIC      = 2        
 LAMBDA_GP     = 10
 LR            = 1e-4
 BETA1, BETA2  = 0.0, 0.9
@@ -255,11 +255,7 @@ def save_checkpoint(
         "g_opt_state": g_opt.state_dict(),
         "c_opt_state": c_opt.state_dict(),
     }, path)
-    try:
-        save_checkpoint(G, C, g_opt, c_opt, epoch, checkpoint_dir)
-        print(f"✓ Checkpoint saved epoch {epoch}")
-    except Exception as e:
-        print(f"✗ Checkpoint FAILED: {e}")
+    print(f"✓ Checkpoint saved → {path}")
 
 
 def load_checkpoint(
@@ -496,13 +492,13 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
             g_epoch += g_loss.item()
             n       += 1
 
-            g_sched.step()
-            c_sched.step()
-
             pbar.set_postfix({
                 "C": f"{c_loss.item():+.3f}",
                 "G": f"{g_loss.item():+.3f}",
             })
+
+        g_sched.step()
+        c_sched.step()
 
         if epoch % 100 == 0:
             avg_c = c_epoch / n
