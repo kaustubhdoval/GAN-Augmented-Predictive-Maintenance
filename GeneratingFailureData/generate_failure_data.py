@@ -24,14 +24,15 @@ from tqdm import tqdm
 WINDOW_SIZE   = 200
 N_CHANNELS    = 3
 NOISE_DIM     = 128
-N_CRITIC      = 2        
-LAMBDA_GP     = 10
-LR            = 1e-4
+N_CRITIC      = 4        
+LAMBDA_GP     = 15
+LR_G          = 1e-4
+LR_C          = 2e-4
 BETA1, BETA2  = 0.0, 0.9
 BATCH_SIZE    = 64
 NUM_EPOCHS    = 500
 
-TRAINING_SAMPLES  = 10_000
+TRAINING_SAMPLES  = 20_000
 GEN_BATCH_SIZE    = 256    # max windows per forward pass in generate_windows
 NUM_WORKERS       = 8
 
@@ -442,8 +443,8 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
     G = Generator().to(device)
     C = Critic().to(device)
 
-    g_opt = optim.Adam(G.parameters(), lr=LR, betas=(BETA1, BETA2))
-    c_opt = optim.Adam(C.parameters(), lr=LR, betas=(BETA1, BETA2))
+    g_opt = optim.Adam(G.parameters(), lr=LR_G, betas=(BETA1, BETA2))
+    c_opt = optim.Adam(C.parameters(), lr=LR_C, betas=(BETA1, BETA2))
 
     g_sched = optim.lr_scheduler.CosineAnnealingLR(g_opt, T_max=NUM_EPOCHS, eta_min=1e-5)
     c_sched = optim.lr_scheduler.CosineAnnealingLR(c_opt, T_max=NUM_EPOCHS, eta_min=1e-5)
