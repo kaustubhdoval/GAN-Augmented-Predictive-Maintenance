@@ -298,7 +298,7 @@ def gradient_penalty(
     cond:   torch.Tensor,
     device: torch.device,
 ) -> torch.Tensor:
-    """WGAN-GP penalty: penalise ||∇critic||₂ ≠ 1 on real/fake interpolations."""
+    """WGAN-GP penalty on CLEAN interpolations — noise must NOT be applied here."""
     B     = real.size(0)
     alpha = torch.rand(B, 1, 1, device=device).expand_as(real)
     interp = (alpha * real + (1 - alpha) * fake).requires_grad_(True)
@@ -312,10 +312,8 @@ def gradient_penalty(
         retain_graph=True,
     )[0]
 
-    # FIX: flatten() is cleaner than view(B, -1) and handles non-contiguous tensors
     grad_norm = grad.flatten(start_dim=1).norm(2, dim=1)
     return ((grad_norm - 1) ** 2).mean()
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5 · Data preparation
@@ -428,12 +426,10 @@ def build_dataloader(
 
 def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/checkpoints"):
     """Train the Conditional WGAN-GP. Returns trained Generator and Critic."""
-    
-    # Resolve to absolute path immediately so there's no ambiguity about
-    # where files land regardless of working directory.
+
     checkpoint_dir = os.path.abspath(checkpoint_dir)
     os.makedirs(checkpoint_dir, exist_ok=True)
-    print(f"Checkpoints will be saved to: {checkpoint_dir}")  
+    print(f"Checkpoints will be saved to: {checkpoint_dir}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
@@ -443,27 +439,34 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
     G = Generator().to(device)
     C = Critic().to(device)
 
-    fake, real = torch.zeros(), torch.zeros() 
-
     g_opt = optim.Adam(G.parameters(), lr=LR_G, betas=(BETA1, BETA2))
     c_opt = optim.Adam(C.parameters(), lr=LR_C, betas=(BETA1, BETA2))
 
     g_sched = optim.lr_scheduler.CosineAnnealingLR(g_opt, T_max=NUM_EPOCHS, eta_min=1e-5)
     c_sched = optim.lr_scheduler.CosineAnnealingLR(c_opt, T_max=NUM_EPOCHS, eta_min=1e-5)
 
-    best_wdist = float("inf")   # we want smallest positive W-dist
-    patience = 20               # how many epochs to wait before stopping
-    wait = 0
+    best_wdist  = float("inf")
+    best_epoch  = -1
+    patience    = 20
+    wait        = 0
+    # Instance noise decays to zero by halfway through training.
+    # This gives the critic a noisy curriculum early on (harder to memorise)
+    # then clean signals later (accurate GP gradients).
+    noise_decay_end = NUM_EPOCHS * 0.5
 
     for epoch in range(1, NUM_EPOCHS + 1):
         G.train()
         C.train()
         g_epoch, c_epoch, n = 0.0, 0.0, 0
 
+        # ── Decaying instance noise std ───────────────────────────────────
+        # Linearly from 0.05 → 0.0 over the first half of training
+        noise_std = 0.05 * max(0.0, 1.0 - epoch / noise_decay_end)
+
         pbar = tqdm(loader, desc=f"Epoch {epoch}/{NUM_EPOCHS}", leave=False)
         for real, labels, rpm_idx in pbar:
-            real    = real + 0.005 * torch.randn_like(real)
-            labels  = labels.to(device,  non_blocking=True)
+            real    = real.to(device, non_blocking=True)
+            labels  = labels.to(device, non_blocking=True)
             rpm_idx = rpm_idx.to(device, non_blocking=True)
             cond    = make_condition(labels, rpm_idx)
             B       = real.size(0)
@@ -472,15 +475,26 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
             for _ in range(N_CRITIC):
                 noise = torch.randn(B, NOISE_DIM, device=device)
 
-                # BUG FIX: fake must be generated OUTSIDE no_grad for GP.
-                # gradient_penalty() creates an interpolation and calls
-                # autograd.grad through it — that graph needs to be live.
-                G.eval()                          # still stop BN/dropout updating
-                fake = fake + 0.005 * torch.randn_like(fake)  
+                G.eval()
+                with torch.no_grad():
+                    fake_clean = G(noise, cond)
                 G.train()
 
-                gp     = gradient_penalty(C, real, fake, cond, device)
-                c_loss = C(fake, cond).mean() - C(real, cond).mean() + LAMBDA_GP * gp
+                # Instance noise on BOTH real and fake for critic input.
+                # GP always uses clean tensors so gradients stay accurate.
+                if noise_std > 0:
+                    real_noisy = real + noise_std * torch.randn_like(real)
+                    fake_noisy = fake_clean + noise_std * torch.randn_like(fake_clean)
+                else:
+                    real_noisy = real
+                    fake_noisy = fake_clean
+
+                gp     = gradient_penalty(C, real, fake_clean, cond, device)
+                c_loss = (
+                    C(fake_noisy, cond).mean()
+                    - C(real_noisy, cond).mean()
+                    + LAMBDA_GP * gp
+                )
 
                 c_opt.zero_grad()
                 c_loss.backward()
@@ -500,39 +514,53 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
             n       += 1
 
             pbar.set_postfix({
-                "C": f"{c_loss.item():+.3f}",
-                "G": f"{g_loss.item():+.3f}",
+                "C":    f"{c_loss.item():+.3f}",
+                "G":    f"{g_loss.item():+.3f}",
+                "σ":    f"{noise_std:.3f}",
             })
 
         g_sched.step()
         c_sched.step()
 
+        # ── Per-epoch W-dist check (catches collapse immediately) ─────────
+        avg_c  = c_epoch / n
+        avg_g  = g_epoch / n
+        wdist  = -avg_c
+
+        # ── Logging every 50 epochs ───────────────────────────────────────
         if epoch % 50 == 0:
-            avg_c = c_epoch / n
-            avg_g = g_epoch / n
-            wdist = -avg_c   # same as what you print
-
             print(f"Epoch [{epoch:>5}/{NUM_EPOCHS}]  "
-                f"W-dist≈{wdist:+.4f}   G-loss: {avg_g:+.4f}")
+                  f"W-dist≈{wdist:+.4f}   G-loss: {avg_g:+.4f}   σ={noise_std:.4f}")
 
-            # ── Early stopping logic ────────────────────────────────
-            if wdist > 0 and wdist < best_wdist:
-                best_wdist = wdist
-                wait = 0
-                save_checkpoint(G, C, g_opt, c_opt, epoch, checkpoint_dir)
-                print(f"✓ New best W-dist → {wdist:.4f} (checkpoint saved)")
-            else:
-                wait += 1
+        # ── Early stopping: fire every epoch, not just every 50 ──────────
+        if wdist > 0 and wdist < best_wdist:
+            best_wdist = wdist
+            best_epoch = epoch
+            wait = 0
+            save_checkpoint(G, C, g_opt, c_opt, epoch, checkpoint_dir)
+            if epoch % 50 == 0:
+                print(f"  ✓ New best W-dist → {wdist:.4f} (checkpoint saved)")
+        else:
+            wait += 1
 
-            # Stop if W-dist starts increasing for too long OR flips negative
-            if wait >= patience or wdist < 0:
-                print(f"Early stopping at epoch {epoch}")
-                break
+        # Stop if W-dist goes negative OR patience exhausted
+        if wdist < 0:
+            print(f"\nEarly stopping at epoch {epoch} — W-dist went negative ({wdist:+.4f})")
+            print(f"Best checkpoint was epoch {best_epoch} with W-dist={best_wdist:.4f}")
+            break
 
-    # FIX: use save_checkpoint for the final save too so it's resumable,
-    # not just bare state_dicts which lose optimiser state.
-    save_checkpoint(G, C, g_opt, c_opt, NUM_EPOCHS, checkpoint_dir)
-    print(f"Final checkpoint saved to {checkpoint_dir}")
+        if wait >= patience:
+            print(f"\nEarly stopping at epoch {epoch} — no improvement for {patience} epochs")
+            print(f"Best checkpoint was epoch {best_epoch} with W-dist={best_wdist:.4f}")
+            break
+
+    # Only save a final checkpoint if training ended naturally and was valid
+    if best_epoch > 0:
+        print(f"\nTraining complete. Best model: epoch {best_epoch}, W-dist={best_wdist:.4f}")
+        print(f"Load it with: load_checkpoint(G, C, g_opt, c_opt, 'checkpoints/checkpoint_epoch_{best_epoch:05d}.pt', device)")
+    else:
+        print("\nWarning: no valid checkpoint was ever saved — W-dist was never positive.")
+
     print("Done.")
     return G, C
 
