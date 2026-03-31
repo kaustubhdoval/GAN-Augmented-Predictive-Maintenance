@@ -443,6 +443,8 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
     G = Generator().to(device)
     C = Critic().to(device)
 
+    fake, real = torch.zeros(), torch.zeros() 
+
     g_opt = optim.Adam(G.parameters(), lr=LR_G, betas=(BETA1, BETA2))
     c_opt = optim.Adam(C.parameters(), lr=LR_C, betas=(BETA1, BETA2))
 
