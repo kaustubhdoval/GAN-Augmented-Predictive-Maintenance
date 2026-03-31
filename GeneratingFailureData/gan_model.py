@@ -460,7 +460,7 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
 
         pbar = tqdm(loader, desc=f"Epoch {epoch}/{NUM_EPOCHS}", leave=False)
         for real, labels, rpm_idx in pbar:
-            real    = real.to(device,    non_blocking=True)
+            real    = real + 0.005 * torch.randn_like(real)
             labels  = labels.to(device,  non_blocking=True)
             rpm_idx = rpm_idx.to(device, non_blocking=True)
             cond    = make_condition(labels, rpm_idx)
@@ -474,7 +474,7 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
                 # gradient_penalty() creates an interpolation and calls
                 # autograd.grad through it — that graph needs to be live.
                 G.eval()                          # still stop BN/dropout updating
-                fake = G(noise, cond).detach()    # .detach() is the right tool here
+                fake = fake + 0.005 * torch.randn_like(fake)  
                 G.train()
 
                 gp     = gradient_penalty(C, real, fake, cond, device)
