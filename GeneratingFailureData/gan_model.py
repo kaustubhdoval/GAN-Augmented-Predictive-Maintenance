@@ -31,6 +31,8 @@ LR_C          = 1.5e-4
 BETA1, BETA2  = 0.0, 0.9
 BATCH_SIZE    = 64
 NUM_EPOCHS    = 300
+EARLY_STOP_PATIENCE = 40   # epochs without W-dist improvement
+MIN_EPOCHS          = 100  # don't stop before the model has had time to warm up
 
 TRAINING_SAMPLES  = 10_000
 GEN_BATCH_SIZE    = 256    # max windows per forward pass in generate_windows
@@ -436,6 +438,9 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
     print(f"  Window size : {WINDOW_SIZE}  |  Channels : {N_CHANNELS}")
     print(f"  Noise dim   : {NOISE_DIM}    |  Batch    : {BATCH_SIZE}")
 
+    best_wdist      = -float("inf")
+    epochs_no_improve = 0
+
     G = Generator().to(device)
     C = Critic().to(device)
 
@@ -447,8 +452,6 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
 
     best_wdist  = float("inf")
     best_epoch  = -1
-    patience    = 20
-    wait        = 0
     # Instance noise decays to zero by halfway through training.
     # This gives the critic a noisy curriculum early on (harder to memorise)
     # then clean signals later (accurate GP gradients).
@@ -522,7 +525,7 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
         g_sched.step()
         c_sched.step()
 
-        # ── Per-epoch W-dist check (catches collapse immediately) ─────────
+        # ── Per-epoch W-dist check ─────────
         avg_c  = c_epoch / n
         avg_g  = g_epoch / n
         wdist  = -avg_c
@@ -531,31 +534,24 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
         if epoch % 50 == 0:
             print(f"Epoch [{epoch:>5}/{NUM_EPOCHS}]  "
                   f"W-dist≈{wdist:+.4f}   G-loss: {avg_g:+.4f}   σ={noise_std:.4f}")
-
-        # ── Early stopping: fire every epoch, not just every 50 ──────────
-        if wdist < best_wdist:
+        
+        # ── Early stopping based on W-dist improvement ────────────────────
+        if wdist > best_wdist:
             best_wdist = wdist
             best_epoch = epoch
-            wait = 0
+            epochs_no_improve = 0
             save_checkpoint(G, C, g_opt, c_opt, epoch, checkpoint_dir)
-            if epoch % 50 == 0:
-                print(f"  ✓ New best W-dist → {wdist:.4f} (checkpoint saved)")
         else:
-            wait += 1
+            epochs_no_improve += 1
 
-        # Stop if patience exhausted — no improvement for this many epochs
-        if wait >= patience:
-            print(f"\nEarly stopping at epoch {epoch} — no improvement for {patience} epochs")
-            print(f"Best checkpoint was epoch {best_epoch} with W-dist={best_wdist:.4f}")
+        if epoch >= MIN_EPOCHS and epochs_no_improve >= EARLY_STOP_PATIENCE:
+            print(f"\nEarly stop at epoch {epoch} — no W-dist improvement for {EARLY_STOP_PATIENCE} epochs.")
             break
 
     # Only save a final checkpoint if training ended naturally and was valid
-    if best_epoch > 0:
-        print(f"\nTraining complete. Best model: epoch {best_epoch}, W-dist={best_wdist:.4f}")
-        print(f"Load it with: load_checkpoint(G, C, g_opt, c_opt, 'checkpoints/checkpoint_epoch_{best_epoch:05d}.pt', device)")
-    else:
-        print("\nWarning: no valid checkpoint was ever saved — W-dist was never positive.")
-
+    print(f"\nTraining complete. Best model: epoch {best_epoch}, W-dist={best_wdist:.4f}")
+    print(f"Load it with: load_checkpoint(G, C, g_opt, c_opt, 'checkpoints/checkpoint_epoch_{best_epoch:05d}.pt', device)")
+    
     print("Done.")
     return G, C
 
@@ -677,6 +673,7 @@ if __name__ == "__main__":
     ]
 
     # ── Load + window ──────────────────────────────────────────────────────
+    print("Loading Data and Slicing into Windows...")
     windows_np, labels_np, rpm_idxs_np = load_csv_to_windows(file_manifest)
 
     # Convert to tensors once; all downstream ops stay in torch
@@ -715,31 +712,34 @@ if __name__ == "__main__":
     )
 
     # ── Train ──────────────────────────────────────────────────────────────
+    print("Starting training...")
     G, C = train(loader)
 
     # ── Generate chatter at high RPMs ─────────────────────────────────────
+    print("Generating synthetic chatter windows at high RPMs...")
     device    = next(G.parameters()).device
     synth_dfs = []
+
+    all_windows_list = []
+    all_labels_list = []
+    all_rpms_list = []
 
     for rpm in [7500, 8000, 8500]:
         gen_windows = generate_windows(G, label=1, rpm=rpm, n=300, device=device)
         dfs = windows_to_dataframes(gen_windows)
-
         for df in dfs:
-            df["RPM"]   = rpm
+            df["RPM"] = rpm
             df["label"] = 1
-
         synth_dfs.extend(dfs)
+
+        all_windows_list.append(gen_windows)
+        all_labels_list.append(np.ones(300, dtype=int))
+        all_rpms_list.append(np.full(300, rpm, dtype=int))
         print(f"Generated 300 chatter windows at {rpm} RPM")
 
-    # ── Save Generated Windows ────────────────────────────────────────────
-    all_windows = np.concatenate([
-        generate_windows(G, label=1, rpm=rpm, n=300, device=device)
-        for rpm in [7500, 8000, 8500]
-    ])
-
-    all_labels = np.array([1] * 900)
-    all_rpms   = np.repeat([7500, 8000, 8500], 300)
+    all_windows = np.concatenate(all_windows_list)
+    all_labels  = np.concatenate(all_labels_list)
+    all_rpms    = np.concatenate(all_rpms_list)
 
     save_windows_to_csv(all_windows, all_labels, all_rpms, output_dir="dataset/synthetic")
 
