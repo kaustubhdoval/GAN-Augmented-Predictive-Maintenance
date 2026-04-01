@@ -438,9 +438,6 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
     print(f"  Window size : {WINDOW_SIZE}  |  Channels : {N_CHANNELS}")
     print(f"  Noise dim   : {NOISE_DIM}    |  Batch    : {BATCH_SIZE}")
 
-    best_wdist      = -float("inf")
-    epochs_no_improve = 0
-
     G = Generator().to(device)
     C = Critic().to(device)
 
@@ -450,8 +447,9 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
     g_sched = optim.lr_scheduler.CosineAnnealingLR(g_opt, T_max=NUM_EPOCHS, eta_min=1e-5)
     c_sched = optim.lr_scheduler.CosineAnnealingLR(c_opt, T_max=NUM_EPOCHS, eta_min=1e-5)
 
-    best_wdist  = float("inf")
-    best_epoch  = -1
+    best_wdist        = -float("inf")  # ← must be negative inf, not positive
+    best_epoch        = -1
+    epochs_no_improve = 0
     # Instance noise decays to zero by halfway through training.
     # This gives the critic a noisy curriculum early on (harder to memorise)
     # then clean signals later (accurate GP gradients).
@@ -537,16 +535,16 @@ def train(loader: DataLoader, checkpoint_dir: str = "GeneratingFailureData/check
         
         # ── Early stopping based on W-dist improvement ────────────────────
         if wdist > best_wdist:
-            best_wdist = wdist
-            best_epoch = epoch
+            best_wdist        = wdist
+            best_epoch        = epoch
             epochs_no_improve = 0
             save_checkpoint(G, C, g_opt, c_opt, epoch, checkpoint_dir)
         else:
             epochs_no_improve += 1
 
         if epoch >= MIN_EPOCHS and epochs_no_improve >= EARLY_STOP_PATIENCE:
-            print(f"\nEarly stop at epoch {epoch} — no W-dist improvement for {EARLY_STOP_PATIENCE} epochs.")
-            break
+            print(f"\nEarly stop at epoch {epoch} — no improvement for {EARLY_STOP_PATIENCE} epochs.")
+            break    
 
     # Only save a final checkpoint if training ended naturally and was valid
     print(f"\nTraining complete. Best model: epoch {best_epoch}, W-dist={best_wdist:.4f}")
