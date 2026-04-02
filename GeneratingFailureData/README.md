@@ -14,6 +14,100 @@ Tri-axial data from a CNC Machine
 
 I decided to utilize a **C-WGAN-GP** ie. Conditional Wasserstein Generative Adversarial Networks with Gradient Penalty primarily for its simple usage, superior ability to recognize and capture local oscillation patterns (like chatter) and for enforcing the Lipschitz constraint - data doesn't deviate excessively from training data.
 
+## Pipeline
+
+```
+Raw CSVs (X, Y, Z signals)
+        │
+        ▼
+┌─────────────────────────────┐
+│  load_csv_to_windows()      │  Overlapping windows (size=200, overlap=50%)
+│  Per-file, vectorised       │  → (N, 3, 200) float32 array
+└─────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────┐
+│  per_window_normalise()     │  Each window independently scaled to [-1, 1]
+│                             │  Saves (w_min, w_range) for denormalisation
+└─────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────┐
+│  Balanced subsample         │  5000 chatter + 5000 no-chatter (configurable)
+│  build_dataloader()         │  Shuffled, pinned, persistent workers
+└─────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────┐
+│  train()                    │  Conditional WGAN-GP
+│  - N_CRITIC steps / batch   │  Critic updated N_CRITIC × per generator step
+│  - Instance noise (decay)   │  σ: 0.05 → 0.0 over first 20% of epochs
+│  - Cosine LR annealing      │  Both G and C schedulers
+│  - Early stopping           │  Patience-based on W-distance
+└─────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────┐
+│  generate_windows()         │  Conditioned on label + RPM class
+│  save_windows_to_csv()      │  → dataset/synthetic/{rpm}_{label}_synth_NNNN.csv
+└─────────────────────────────┘
+```
+
+---
+
+## Architecture
+
+The model is a **Conditional WGAN-GP** operating on raw 1-D tri-axial time series.
+Conditioning is a concatenation of a 2-class label one-hot and a 6-class RPM one-hot → **8-dimensional condition vector**.
+
+### Generator
+
+```
+Noise (128,) + Condition (8,)
+        │
+        ▼  Linear projection
+(256, 25)       ← start = WINDOW_SIZE // 2^(n_upsample) = 200 // 8 = 25
+        │
+        ▼  × 3 ConvTranspose1d blocks (stride=2, doubles length each time)
+        │   Condition injected via channel-concat before each block
+(128, 50) → (64, 100) → (32, 200)
+        │
+        ▼  ResBlock1D
+        │   Condition injected at block INPUT (before BatchNorm)
+        │   Skip connection via 1×1 Conv
+(32, 200)
+        │
+        ▼  Conv1d(32 + 8, 3, kernel=1) + Tanh
+Output: (3, 200)   ← (N_CHANNELS, WINDOW_SIZE)
+```
+
+### Critic
+
+```
+Input: (3, 200) + Condition (8,)
+        │   Condition broadcast → (8, 200), concat on channel dim
+        ▼
+(11, 200)
+        │
+        ▼  × 4 Conv1d blocks (stride=2, halves length each time)
+        │   Condition re-injected between each block
+        │   No BatchNorm (destabilises gradient penalty)
+(32, 100) → (64, 50) → (128, 25) → (256, 12)
+        │
+        ▼  AdaptiveAvgPool1d(1) → flatten
+        ▼  Linear(256, 1)
+Output: scalar Wasserstein score
+```
+
+### Training Objective
+
+```
+Critic loss  = E[C(fake)] − E[C(real)] + λ·GP        λ = 10
+Generator loss = −E[C(fake)]
+GP           = gradient penalty on random interpolations (real ↔ fake)
+Instance noise decays linearly: σ = 0.05 × max(0, 1 − epoch/noise_decay_end)
+```
+
 ## About GANs
 
 ### Structure

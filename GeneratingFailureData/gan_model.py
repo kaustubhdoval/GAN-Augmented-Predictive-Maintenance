@@ -329,10 +329,6 @@ def load_csv_to_windows(
     """
     Load raw CSVs and slice into overlapping windows.
 
-    FIX vs original: instead of three Python lists that grow with append(),
-    we count total windows first, pre-allocate three arrays, then fill them.
-    This avoids repeated reallocation and the final np.stack() copy.
-
     Returns
     -------
     windows  : float32  (N, N_CHANNELS, window_size)
